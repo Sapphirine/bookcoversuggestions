@@ -1,0 +1,2 @@
+# bookcoversuggestions
+Is a picture worth a thousand words? Book covers are the first glimpse into the book and need to immediately convey a convincing message to induce readers. But how do you design a book cover and what should you prioritize? We use Amazon product and review data to explore book covers. Using nearest neighbor and convolutional neural network models, we aim to learn what is a good book cover and help design novel covers by generating suggestions.
