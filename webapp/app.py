@@ -1,21 +1,28 @@
 import config
 import cv2
-from flask import Flask, request
+from flask import Flask, request, send_file
 from google.cloud import bigquery
 from google.oauth2 import service_account
+from io import BytesIO
 import keras.backend.tensorflow_backend as tb
 from keras.models import load_model
 import math
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageStat
+import requests
 import scipy
 import scipy.cluster
+import shutil
 from sklearn.externals import joblib 
 from sklearn.neighbors import NearestNeighbors
+import time
+
+#server = "http://localhost:8080/"
+server = "http://35.222.73.123:80/"
 
 BQ_KEY_FILE = "bq-service-account-key.json"
-CNN_MODEL_FILE = "cover_cnn_model.h5"
+CNN_MODEL_FILE = "cover_cnn_model_epoch200.h5"
 INDEXED_BOOKS_CSV = "indexed_books.csv"
 INPUT_FORM_HTML_FILE = "static/inputForm.html"
 KNN_MODEL_FILE = "knn-model.jlib"
@@ -25,7 +32,7 @@ credentials = service_account.Credentials.from_service_account_file(
     BQ_KEY_FILE,
     scopes=["https://www.googleapis.com/auth/cloud-platform"]
 )
-client = bigquery.Client(
+bq_client = bigquery.Client(
     credentials=credentials,
     project=credentials.project_id
 )
@@ -107,11 +114,38 @@ FROM
 WHERE
     ASIN in ({})
   """.format(ASIN)
-  df = client.query(sql).to_dataframe()
+  df = bq_client.query(sql).to_dataframe()
   ratingMap = {}
   for ind in df.index:
     ratingMap[df["ASIN"][ind]] = df["rating"][ind]
   return ratingMap
+
+def downloadIm(url):
+  response = requests.get(url, stream=True)
+  return Image.open(response.raw)
+
+def get_suggestion(predictedRating, processedIm, ASINs, ASINRatingMap):
+  betterASIN = None
+  betterASINRating = 0
+  for ASIN in ASINs:
+    if ASIN in ASINRatingMap and ASINRatingMap[ASIN] > betterASINRating and ASINRatingMap[ASIN] > predictedRating:
+      betterASIN = ASIN
+      betterASINRating = ASINRatingMap[ASIN]
+  if betterASIN == None:
+    return "Your book cover is perfect as it is!"
+  else:
+    imageGCSPath = "https://storage.googleapis.com/book-covers-e6893/covers/224x224/" + betterASIN + ".jpg"
+    betterProcessedIm = image_features(downloadIm(imageGCSPath))
+    if abs(betterProcessedIm[3] - processedIm[3]) > abs(betterProcessedIm[4] - processedIm[4]):
+      if betterProcessedIm[3] > processedIm[3]:
+        return "Suggestion: You should make the book cover brighter"
+      else:
+        return "Suggestion: You should make the book cover less bright"
+    else:
+      if betterProcessedIm[4] > processedIm[4]:
+        return "Suggestion: You should make the book cover more colorful"
+      else:
+        return "Suggestion: You should make the book cover less colorful"
 
 @app.route('/')
 def hello():
@@ -121,6 +155,8 @@ def hello():
 def processImage():
   uploadedFile = request.files['pic']
   im = Image.open(uploadedFile)
+  fileName = "static/im-" + str(time.time()) + ".jpg"
+  im.save(fileName)
 
   # HACK to get around https://github.com/keras-team/keras/issues/13353
   tb._SYMBOLIC_SCOPE.value = True
@@ -135,13 +171,15 @@ def processImage():
   print(ASINs)
   ASINRatingMap = get_similar_ratings(ASINs)
 
-  finalRes = [predictedRating]
+  suggestion = get_suggestion(predictedRating, processedIm, ASINs, ASINRatingMap)
+
+  finalRes = [server + fileName, "Expected rating = " + str(round(predictedRating, 2)), suggestion]
   for ASIN in ASINs:
     finalRes.append(ASIN)
     if ASIN in ASINRatingMap:
-      finalRes.append("Rating: " + str(ASINRatingMap[ASIN]))
+      finalRes.append("rating = " + str(round(ASINRatingMap[ASIN], 2)))
     else:
-      finalRes.append("")
+      finalRes.append("unrated")
 
   return results % tuple(finalRes)
 
